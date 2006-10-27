@@ -10,7 +10,8 @@
  * A cache directory is needed.
  *
  * Example usage:
- * mplayer -dumpstream -dumpfile /dev/fd/3 3>&1 | ./timeshift -d cache | mplayer -
+ * mplayer -dumpstream -dumpfile /dev/fd/3 dvb://channel 3>&1 |
+ *      ./timeshift -d cache | mplayer -
  */
 
 #define _GNU_SOURCE
