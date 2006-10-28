@@ -181,6 +181,9 @@ int read_storage(char *buf, int bufsz)
     if (sz == 0)
         printf("End of file in read_storage, shouldn't happen.\n"), abort();
 
+    if (lseek(s->fdr, -sz, SEEK_CUR) == -1)
+        perror("lseek"), abort();
+
     return sz;
 }
 
@@ -193,6 +196,9 @@ void advance_storage(int sz)
         printf("No storage to advance!\n"), abort();
 
     storage->offr += sz;
+
+    if (lseek(storage->fdr, sz, SEEK_CUR) == -1)
+        perror("lseek"), abort();
 }
 
 /**
