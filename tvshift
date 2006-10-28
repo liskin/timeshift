@@ -1,0 +1,12 @@
+#!/bin/bash
+
+#
+# Timeshift player script
+# Usage:
+# tvshift "mplayer dvb://channel"
+#
+
+CACHE=~/tscache/
+PLAYER="mplayer -profile dvb"
+
+bash -i -c "$1 -dumpstream -dumpfile /dev/fd/3 3>&1" | timeshift -d "$CACHE" | $PLAYER -
