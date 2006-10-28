@@ -113,7 +113,7 @@ void drop_used_storage(void)
 }
 
 /**
- * Write the data to the one storage, alloc it if needed.
+ * Write the data to one storage, alloc it if needed.
  * \return The amount of data that actually fit into this storage.
  */
 int do_storage_write(const char *buf, int bufsz)
