@@ -78,7 +78,7 @@ void alloc_storage(void)
 void drop_storage(void)
 {
     if (!storage)
-        printf("No storage to drop!\n"), abort();
+        fprintf(stderr, "No storage to drop!\n"), abort();
 
     struct storage_t *s = storage;
 
@@ -170,7 +170,7 @@ int data_available()
 int read_storage(char *buf, int bufsz)
 {
     if (!storage)
-        printf("No storage to read from!\n"), abort();
+        fprintf(stderr, "No storage to read from!\n"), abort();
 
     struct storage_t *s = storage;
 
@@ -179,7 +179,7 @@ int read_storage(char *buf, int bufsz)
     if (sz == -1)
         perror("read"), abort();
     if (sz == 0)
-        printf("End of file in read_storage, shouldn't happen.\n"), abort();
+        fprintf(stderr, "End of file in read_storage, shouldn't happen.\n"), abort();
 
     if (lseek(s->fdr, -sz, SEEK_CUR) == -1)
         perror("lseek"), abort();
@@ -193,7 +193,7 @@ int read_storage(char *buf, int bufsz)
 void advance_storage(int sz)
 {
     if (!storage)
-        printf("No storage to advance!\n"), abort();
+        fprintf(stderr, "No storage to advance!\n"), abort();
 
     storage->offr += sz;
 
@@ -229,27 +229,27 @@ int main(int argc, char *argv[])
             case 's':
                 chunksize = atoi(optarg);
                 if (!chunksize) {
-                    printf("Bad chunksize\n");
+                    fprintf(stderr, "Bad chunksize\n");
                     return -1;
                 }
                 break;
 
             case 'h':
-                printf("Usage: %s [options]\n", argv[0]);
-                printf(" -h - this message\n");
-                printf(" -d dir - cache dir\n");
-                printf(" -s sz - chunk size\n");
+                fprintf(stderr, "Usage: %s [options]\n", argv[0]);
+                fprintf(stderr, " -h - this message\n");
+                fprintf(stderr, " -d dir - cache dir\n");
+                fprintf(stderr, " -s sz - chunk size\n");
                 return 0;
                 
             case ':':
             case '?':
-                printf("Use %s -h for help\n", argv[0]);
+                fprintf(stderr, "Use %s -h for help\n", argv[0]);
                 return -1;
         }
     }
 
     if (!cachedir) {
-        printf("Cache dir not specified\n");
+        fprintf(stderr, "Cache dir not specified\n");
         return -1;
     }
 
