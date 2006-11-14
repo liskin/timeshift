@@ -7,6 +7,10 @@
  * Superpipe that reads everything and remembers it so you can read it anytime
  * you want. Useful for time-shifting.
  *
+ * Instant recording:
+ * SIGUSR1 - start new recording
+ * SIGUSR2 - stop recording
+ *
  * A cache directory is needed.
  *
  * Example usage:
@@ -30,7 +34,7 @@
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
 
-char *cachedir = 0;
+char *cachedir = 0, *recorddir = 0;
 int chunksize = 4 * 1024 * 1024;
 
 /**
@@ -45,6 +49,11 @@ struct storage_t {
 };
 
 struct storage_t *storage = 0, *last_storage = 0;
+
+/**
+ * Recording filehandle.
+ */
+FILE *record = 0;
 
 /**
  * Alloc a new storage and push it to the list.
@@ -153,7 +162,7 @@ void write_storage(const char *buf, int bufsz)
 /**
  * Return if there is data available.
  */
-int data_available()
+int data_available(void)
 {
     drop_used_storage();
 
@@ -202,6 +211,37 @@ void advance_storage(int sz)
 }
 
 /**
+ * Stop recording, if any.
+ */
+void stop_recording(void)
+{
+    if (record) {
+        fclose(record);
+        record = 0;
+    }
+}
+
+/**
+ * Start new recording.
+ */
+void start_recording(void)
+{
+    stop_recording();
+
+    char name[strlen(recorddir) + 20];
+    strcpy(name, recorddir);
+    strcat(name, "/recordXXXXXX");
+
+    int fd = mkstemp(name);
+    if (fd == -1)
+        perror("mkstemp"), abort();
+
+    record = fdopen(fd, "ab");
+    if (!record)
+        perror("fdopen"), abort();
+}
+
+/**
  * Signal handler. Free storage and quit.
  */
 void sig(int num) {
@@ -209,21 +249,41 @@ void sig(int num) {
     exit(0);
 }
 
+/**
+ * USR1 signal handler - start recording.
+ */
+void sigusr1(int num) {
+    start_recording();
+}
+
+/**
+ * USR2 signal handler - stop recording.
+ */
+void sigusr2(int num) {
+    stop_recording();
+}
+
 int main(int argc, char *argv[])
 {
     signal(SIGPIPE, SIG_IGN);
     signal(SIGINT, sig);
     signal(SIGTERM, sig);
+    signal(SIGUSR1, sigusr1);
+    signal(SIGUSR2, sigusr2);
 
     while (1) {
         char c;
 
-        if ((c = getopt(argc, argv, "hd:s:")) == -1)
+        if ((c = getopt(argc, argv, "hd:r:s:")) == -1)
             break;
 
         switch (c) {
             case 'd':
                 cachedir = optarg;
+                break;
+
+            case 'r':
+                recorddir = optarg;
                 break;
 
             case 's':
@@ -238,6 +298,7 @@ int main(int argc, char *argv[])
                 fprintf(stderr, "Usage: %s [options]\n", argv[0]);
                 fprintf(stderr, " -h - this message\n");
                 fprintf(stderr, " -d dir - cache dir\n");
+                fprintf(stderr, " -r dir - recording dir\n");
                 fprintf(stderr, " -s sz - chunk size\n");
                 return 0;
                 
@@ -253,6 +314,9 @@ int main(int argc, char *argv[])
         return -1;
     }
 
+    if (!recorddir)
+        recorddir = cachedir;
+
     if (chdir(cachedir) == -1)
         perror("chdir"), abort();
 
@@ -265,7 +329,7 @@ int main(int argc, char *argv[])
         FD_ZERO(&wr);
         if (data) FD_SET(1, &wr);
 
-        int ret = select(2, &rd, &wr, 0, 0);
+        int ret = TEMP_FAILURE_RETRY(select(2, &rd, &wr, 0, 0));
         if (ret == -1)
             perror("select"), abort();
 
@@ -290,6 +354,13 @@ int main(int argc, char *argv[])
                 perror("write"), abort();
             }
             advance_storage(wsz);
+
+            /*
+             * Record.
+             */
+            if (record)
+                if (fwrite(buffer, wsz, 1, record) != 1)
+                    fprintf(stderr, "Recording error"), stop_recording();
         }
     }
 
