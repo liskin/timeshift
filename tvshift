@@ -7,6 +7,7 @@
 #
 
 TVCACHE=${TVCACHE:-~/tscache/}
+TVREC=${TVREC:-~/tscache/}
 TVPLAYER=${TVPLAYER:-"mplayer -profile dvb"}
 
-bash -i -c "$1 -dumpstream -dumpfile /dev/fd/3 3>&1 1>/dev/null" | timeshift -d "$TVCACHE" | $TVPLAYER -
+bash -i -c "$1 -dumpstream -dumpfile /dev/fd/3 3>&1 1>/dev/null" | timeshift -d "$TVCACHE" -r "$TVREC" | $TVPLAYER -
