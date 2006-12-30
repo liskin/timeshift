@@ -6,7 +6,7 @@
  *
  * Superpipe that reads everything and remembers it so you can read it anytime
  * you want. Useful for time-shifting.
- * (this is the Win32 port which listens on its own socket and forwards the
+ * (this is the HTTP branch which listens on its own socket and forwards the
  * request to another HTTP server, pipecaching its reply)
  *
  * A cache directory is needed.
@@ -22,6 +22,7 @@
 #include <sys/select.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
@@ -286,9 +287,7 @@ void do_timeshift(int fdin, int fdout)
         if (FD_ISSET(fdin, &rd)) {
             char buffer[4096];
             int sz = read(fdin, buffer, 4096);
-            if (sz == -1)
-                perror("read"), abort();
-            else if (sz == 0)
+            if (sz == -1 || sz == 0)
                 in = 0;
             else
                 write_storage(th, buffer, sz);
@@ -298,11 +297,8 @@ void do_timeshift(int fdin, int fdout)
             char buffer[4096];
             int sz = read_storage(th, buffer, 4096);
             int wsz = write(fdout, buffer, sz);
-            if (wsz == -1) {
-                if (errno == EPIPE || errno == ECONNRESET)
-                    goto exit;
-                perror("write"), abort();
-            }
+            if (wsz == -1)
+                goto exit;
             advance_storage(th, wsz);
 
 #if 0
@@ -366,9 +362,7 @@ void thread(int cl)
         if (FD_ISSET(cl, &rd)) {
             char buffer[4096];
             int sz = read(cl, buffer, 4096);
-            if (sz == -1)
-                perror("read"), abort();
-            else if (sz == 0)
+            if (sz == -1 || sz == 0)
                 goto exit;
             else if (sendall(s, buffer, sz) == -1)
                 perror("sendall"), abort();
@@ -426,9 +420,23 @@ unsigned long resolv(const char *host)
     return host_ip;
 }
 
+/**
+ * Clean the zombies.
+ */
+void sigchld(int s)
+{
+    int status, serrno;
+    serrno = errno;
+    while (1)
+	if (waitpid (WAIT_ANY, &status, WNOHANG) <= 0)
+	    break;
+    errno = serrno;
+}
+
 int main(int argc, char *argv[])
 {
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGCHLD, sigchld);
     memset(&dst, 0, sizeof(dst));
     dst.sin_family = AF_INET;
 
@@ -527,7 +535,15 @@ int main(int argc, char *argv[])
             if (cl == -1)
                 perror("accept"), abort();
 
-            thread(cl);
+	    pid_t pid;
+	    if ((pid = fork()) == 0) {
+		close(s);
+                thread(cl);
+		return 0;
+	    } else if (pid == -1)
+                perror("fork"), abort();
+            else
+                close(cl);
         }
     }
 
