@@ -6,10 +6,8 @@
  *
  * Superpipe that reads everything and remembers it so you can read it anytime
  * you want. Useful for time-shifting.
- *
- * Instant recording:
- * SIGUSR1 - start new recording
- * SIGUSR2 - stop recording
+ * (this is the Win32 port which listens on its own socket and forwards the
+ * request to another HTTP server, pipecaching its reply)
  *
  * A cache directory is needed.
  *
@@ -28,12 +26,18 @@
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <netdb.h>
 
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
 
 char *cachedir = 0, *recorddir = 0;
 int chunksize = 4 * 1024 * 1024;
+unsigned short port = 8080;
+struct sockaddr_in dst;
 
 /**
  * Structure for storage.
@@ -259,6 +263,9 @@ void start_recording(struct thread_t *th)
 }
 #endif
 
+/**
+ * Do the pipecaching on the in/out fds.
+ */
 void do_timeshift(int fdin, int fdout)
 {
     struct thread_t *th = new_thread_t();
@@ -278,7 +285,7 @@ void do_timeshift(int fdin, int fdout)
 
         if (FD_ISSET(fdin, &rd)) {
             char buffer[4096];
-            int sz = read(fdin, &buffer, 4096);
+            int sz = read(fdin, buffer, 4096);
             if (sz == -1)
                 perror("read"), abort();
             else if (sz == 0)
@@ -292,7 +299,7 @@ void do_timeshift(int fdin, int fdout)
             int sz = read_storage(th, buffer, 4096);
             int wsz = write(fdout, buffer, sz);
             if (wsz == -1) {
-                if (errno == EPIPE)
+                if (errno == EPIPE || errno == ECONNRESET)
                     goto exit;
                 perror("write"), abort();
             }
@@ -314,14 +321,121 @@ exit:
     free(th);
 }
 
+/**
+ * Send the whole buffer, even if that requires blocking.
+ */
+int sendall(int s, const char* buf, const int size)
+{
+    int sz = size;
+    const char *p = buf;
+    while (sz) {
+	int ret = TEMP_FAILURE_RETRY(write(s, p, sz));
+	if (ret == -1)
+	    return ret;
+
+	p += ret;
+	sz -= ret;
+    }
+
+    return size;
+}
+
+/**
+ * The client thread. Connect to the destination, pass the request and then do
+ * the pipecaching.
+ */
+void thread(int cl)
+{
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s == -1)
+        perror("socket"), abort();
+
+    if (connect(s, &dst, sizeof(dst)) == -1)
+        goto exit;
+
+    while (1) {
+        fd_set rd;
+        FD_ZERO(&rd);
+        FD_SET(cl, &rd);
+        FD_SET(s, &rd);
+
+        int ret = TEMP_FAILURE_RETRY(select(MAX(cl, s) + 1, &rd, 0, 0, 0));
+        if (ret == -1)
+            perror("select"), abort();
+
+        if (FD_ISSET(cl, &rd)) {
+            char buffer[4096];
+            int sz = read(cl, buffer, 4096);
+            if (sz == -1)
+                perror("read"), abort();
+            else if (sz == 0)
+                goto exit;
+            else if (sendall(s, buffer, sz) == -1)
+                perror("sendall"), abort();
+        }
+
+        if (FD_ISSET(s, &rd))
+            break;
+    }
+
+    do_timeshift(s, cl);
+
+exit:
+    close(cl);
+    close(s);
+}
+
+/**
+ * Initialize the listening socket.
+ */
+int init_server_socket(void)
+{
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s == -1)
+        perror("socket"), abort();
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = INADDR_ANY;
+    sa.sin_port = htons(port);
+
+    if (bind(s, &sa, sizeof(sa)) == -1)
+        perror("bind"), abort();
+
+    if (listen(s, 5) == -1)
+        perror("listen"), abort();
+
+    return s;
+}
+
+/**
+ * Resolve the hostname.
+ */
+unsigned long resolv(const char *host)
+{
+    struct hostent *hp;
+    unsigned long host_ip = 0;
+
+    hp = gethostbyname(host);
+    if (!hp)
+	fprintf(stderr, "Could not resolve hostname %s\n", host);
+    else
+	host_ip = *(unsigned long *)(hp->h_addr);
+
+    return host_ip;
+}
+
 int main(int argc, char *argv[])
 {
     signal(SIGPIPE, SIG_IGN);
+    memset(&dst, 0, sizeof(dst));
+    dst.sin_family = AF_INET;
 
     while (1) {
         char c;
 
-        if ((c = getopt(argc, argv, "hd:r:s:")) == -1)
+        if ((c = getopt(argc, argv, "hd:r:s:l:t:p:")) == -1)
             break;
 
         switch (c) {
@@ -341,12 +455,37 @@ int main(int argc, char *argv[])
                 }
                 break;
 
+            case 'l':
+                port = atoi(optarg);
+                if (!port) {
+                    fprintf(stderr, "Bad port\n");
+                    return -1;
+                }
+                break;
+
+            case 't':
+                dst.sin_addr.s_addr = resolv(optarg);
+                if (!dst.sin_addr.s_addr)
+                    return -1;
+                break;
+
+            case 'p':
+                dst.sin_port = htons(atoi(optarg));
+                if (!dst.sin_port) {
+                    fprintf(stderr, "Bad port\n");
+                    return -1;
+                }
+                break;
+
             case 'h':
                 fprintf(stderr, "Usage: %s [options]\n", argv[0]);
                 fprintf(stderr, " -h - this message\n");
                 fprintf(stderr, " -d dir - cache dir\n");
                 fprintf(stderr, " -r dir - recording dir\n");
                 fprintf(stderr, " -s sz - chunk size\n");
+                fprintf(stderr, " -l port - listen port\n");
+                fprintf(stderr, " -t host - dst host\n");
+                fprintf(stderr, " -p port - dst port\n");
                 return 0;
                 
             case ':':
@@ -361,13 +500,36 @@ int main(int argc, char *argv[])
         return -1;
     }
 
+    if (!dst.sin_addr.s_addr || !dst.sin_port) {
+        fprintf(stderr, "Destination not specified\n");
+        return -1;
+    }
+
     if (!recorddir)
         recorddir = cachedir;
 
     if (chdir(cachedir) == -1)
         perror("chdir"), abort();
 
-    do_timeshift(0, 1);
+    int s = init_server_socket();
+
+    while (1) {
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(s, &fds);
+
+        int ret = TEMP_FAILURE_RETRY(select(s + 1, &fds, 0, 0, 0));
+        if (ret == -1)
+            perror("select"), abort();
+
+        if (FD_ISSET(s, &fds)) {
+            int cl = accept(s, 0, 0);
+            if (cl == -1)
+                perror("accept"), abort();
+
+            thread(cl);
+        }
+    }
 
     return 0;
 }
