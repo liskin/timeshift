@@ -522,7 +522,8 @@ int main(int argc, char *argv[])
             if (cl == -1)
                 perror("accept"), abort();
 
-            thread(cl);
+            if (_beginthread((void (*)(void *)) &thread, 0, (void *) cl) == -1)
+                perror("_beginthread"), abort();
         }
     }
 
