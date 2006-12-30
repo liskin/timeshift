@@ -1,5 +1,5 @@
 /*
- * timeshift
+ * timeshift - Win32
  *
  * Author: Tomas Janousek <tomi@nomi.cz>
  * License: GPL
@@ -14,8 +14,6 @@
  * A cache directory is needed.
  *
  * Example usage:
- * mplayer -dumpstream -dumpfile /dev/fd/3 dvb://channel 3>&1 |
- *      ./timeshift -d cache | mplayer -
  */
 
 #define _GNU_SOURCE
@@ -48,17 +46,35 @@ struct storage_t {
     int offr, offw;
 };
 
-struct storage_t *storage = 0, *last_storage = 0;
+struct thread_t {
+    struct storage_t *storage, *last_storage;
+#if 0
+    FILE *record; ///< Recording filehandle.
+#endif
+};
+
 
 /**
- * Recording filehandle.
+ * Alloc new thread_t.
  */
-FILE *record = 0;
+struct thread_t * new_thread_t(void) {
+    struct thread_t *th = malloc(sizeof(struct thread_t));
+    if (!th)
+        perror("malloc"), abort();
+
+    th->storage = 0;
+    th->last_storage = 0;
+#if 0
+    th->record = 0;
+#endif
+
+    return th;
+}
 
 /**
  * Alloc a new storage and push it to the list.
  */
-void alloc_storage(void)
+void alloc_storage(struct thread_t *th)
 {
     struct storage_t *s = malloc(sizeof(struct storage_t));
     if (!s)
@@ -74,50 +90,50 @@ void alloc_storage(void)
         perror("open"), abort();
     s->offr = s->offw = 0;
 
-    struct storage_t **sp = &storage;
+    struct storage_t **sp = &th->storage;
     while (*sp)
         sp = &(*sp)->next;
     *sp = s;
-    last_storage = s;
+    th->last_storage = s;
 }
 
 /**
  * Drop the first storage from the list.
  */
-void drop_storage(void)
+void drop_storage(struct thread_t *th)
 {
-    if (!storage)
+    if (!th->storage)
         fprintf(stderr, "No storage to drop!\n"), abort();
 
-    struct storage_t *s = storage;
+    struct storage_t *s = th->storage;
 
     close(s->fdw);
     close(s->fdr);
     unlink(s->name);
 
-    storage = storage->next;
+    th->storage = th->storage->next;
     free(s);
-    if (s == last_storage)
-        last_storage = 0;
+    if (s == th->last_storage)
+        th->last_storage = 0;
 }
 
 /**
  * Clean up the storage.
  */
-void drop_all_storage(void)
+void drop_all_storage(struct thread_t *th)
 {
-    while (storage)
-        drop_storage();
+    while (th->storage)
+        drop_storage(th);
 }
 
 /**
  * Drop all filled and read storage.
  */
-void drop_used_storage(void)
+void drop_used_storage(struct thread_t *th)
 {
-    while (storage && storage->offr == storage->offw &&
-            storage->offw == chunksize) {
-        drop_storage();
+    while (th->storage && th->storage->offr == th->storage->offw &&
+            th->storage->offw == chunksize) {
+        drop_storage(th);
     }
 }
 
@@ -125,12 +141,12 @@ void drop_used_storage(void)
  * Write the data to one storage, alloc it if needed.
  * \return The amount of data that actually fit into this storage.
  */
-int do_storage_write(const char *buf, int bufsz)
+int do_storage_write(struct thread_t *th, const char *buf, int bufsz)
 {
-    if (!last_storage || last_storage->offw == chunksize)
-        alloc_storage();
+    if (!th->last_storage || th->last_storage->offw == chunksize)
+        alloc_storage(th);
 
-    struct storage_t *s = last_storage;
+    struct storage_t *s = th->last_storage;
     const char *p = buf;
     int sz;
 
@@ -149,12 +165,12 @@ int do_storage_write(const char *buf, int bufsz)
 /**
  * Write all the data to the storage.
  */
-void write_storage(const char *buf, int bufsz)
+void write_storage(struct thread_t *th, const char *buf, int bufsz)
 {
     const char *p = buf;
 
     while ((p - buf) < bufsz) {
-        int sz = do_storage_write(p, bufsz - (p - buf));
+        int sz = do_storage_write(th, p, bufsz - (p - buf));
         p += sz;
     }
 }
@@ -162,12 +178,12 @@ void write_storage(const char *buf, int bufsz)
 /**
  * Return if there is data available.
  */
-int data_available(void)
+int data_available(struct thread_t *th)
 {
-    drop_used_storage();
+    drop_used_storage(th);
 
-    if (storage)
-        return storage->offw - storage->offr;
+    if (th->storage)
+        return th->storage->offw - th->storage->offr;
     else
         return 0;
 }
@@ -176,12 +192,12 @@ int data_available(void)
  * Read data from storage. Does not advance the read offset.
  * \return The amount of data read.
  */
-int read_storage(char *buf, int bufsz)
+int read_storage(struct thread_t *th, char *buf, int bufsz)
 {
-    if (!storage)
+    if (!th->storage)
         fprintf(stderr, "No storage to read from!\n"), abort();
 
-    struct storage_t *s = storage;
+    struct storage_t *s = th->storage;
 
     int tord = MIN(s->offw - s->offr, bufsz);
     int sz = read(s->fdr, buf, tord);
@@ -199,34 +215,35 @@ int read_storage(char *buf, int bufsz)
 /**
  * Advance read offset.
  */
-void advance_storage(int sz)
+void advance_storage(struct thread_t *th, int sz)
 {
-    if (!storage)
+    if (!th->storage)
         fprintf(stderr, "No storage to advance!\n"), abort();
 
-    storage->offr += sz;
+    th->storage->offr += sz;
 
-    if (lseek(storage->fdr, sz, SEEK_CUR) == -1)
+    if (lseek(th->storage->fdr, sz, SEEK_CUR) == -1)
         perror("lseek"), abort();
 }
 
+#if 0
 /**
  * Stop recording, if any.
  */
-void stop_recording(void)
+void stop_recording(struct thread_t *th)
 {
-    if (record) {
-        fclose(record);
-        record = 0;
+    if (th->record) {
+        fclose(th->record);
+        th->record = 0;
     }
 }
 
 /**
  * Start new recording.
  */
-void start_recording(void)
+void start_recording(struct thread_t *th)
 {
-    stop_recording();
+    stop_recording(th);
 
     char name[strlen(recorddir) + 20];
     strcpy(name, recorddir);
@@ -236,40 +253,70 @@ void start_recording(void)
     if (fd == -1)
         perror("mkstemp"), abort();
 
-    record = fdopen(fd, "ab");
-    if (!record)
+    th->record = fdopen(fd, "ab");
+    if (!th->record)
         perror("fdopen"), abort();
 }
+#endif
 
-/**
- * Signal handler. Free storage and quit.
- */
-void sig(int num) {
-    drop_all_storage();
-    exit(0);
-}
+void do_timeshift(int fdin, int fdout)
+{
+    struct thread_t *th = new_thread_t();
 
-/**
- * USR1 signal handler - start recording.
- */
-void sigusr1(int num) {
-    start_recording();
-}
+    int in = 1, data = 0;
 
-/**
- * USR2 signal handler - stop recording.
- */
-void sigusr2(int num) {
-    stop_recording();
+    while ((data = data_available(th)) || in) {
+        fd_set rd, wr;
+        FD_ZERO(&rd);
+        if (in) FD_SET(fdin, &rd);
+        FD_ZERO(&wr);
+        if (data) FD_SET(fdout, &wr);
+
+        int ret = TEMP_FAILURE_RETRY(select(MAX(fdin, fdout) + 1, &rd, &wr, 0, 0));
+        if (ret == -1)
+            perror("select"), abort();
+
+        if (FD_ISSET(fdin, &rd)) {
+            char buffer[4096];
+            int sz = read(fdin, &buffer, 4096);
+            if (sz == -1)
+                perror("read"), abort();
+            else if (sz == 0)
+                in = 0;
+            else
+                write_storage(th, buffer, sz);
+        }
+
+        if (FD_ISSET(fdout, &wr)) {
+            char buffer[4096];
+            int sz = read_storage(th, buffer, 4096);
+            int wsz = write(fdout, buffer, sz);
+            if (wsz == -1) {
+                if (errno == EPIPE)
+                    goto exit;
+                perror("write"), abort();
+            }
+            advance_storage(th, wsz);
+
+#if 0
+            /*
+             * Record.
+             */
+            if (th->record)
+                if (fwrite(buffer, wsz, 1, th->record) != 1)
+                    fprintf(stderr, "Recording error"), stop_recording(th);
+#endif
+        }
+    }
+
+exit:
+    drop_all_storage(th);
+    free(th);
 }
 
 int main(int argc, char *argv[])
 {
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGINT, sig);
-    signal(SIGTERM, sig);
-    signal(SIGUSR1, sigusr1);
-    signal(SIGUSR2, sigusr2);
 
     while (1) {
         char c;
@@ -320,52 +367,7 @@ int main(int argc, char *argv[])
     if (chdir(cachedir) == -1)
         perror("chdir"), abort();
 
-    int in = 1, data = 0;
-
-    while ((data = data_available()) || in) {
-        fd_set rd, wr;
-        FD_ZERO(&rd);
-        if (in) FD_SET(0, &rd);
-        FD_ZERO(&wr);
-        if (data) FD_SET(1, &wr);
-
-        int ret = TEMP_FAILURE_RETRY(select(2, &rd, &wr, 0, 0));
-        if (ret == -1)
-            perror("select"), abort();
-
-        if (FD_ISSET(0, &rd)) {
-            char buffer[4096];
-            int sz = read(0, &buffer, 4096);
-            if (sz == -1)
-                perror("read"), abort();
-            else if (sz == 0)
-                in = 0;
-            else
-                write_storage(buffer, sz);
-        }
-
-        if (FD_ISSET(1, &wr)) {
-            char buffer[4096];
-            int sz = read_storage(buffer, 4096);
-            int wsz = write(1, buffer, sz);
-            if (wsz == -1) {
-                if (errno == EPIPE)
-                    goto exit;
-                perror("write"), abort();
-            }
-            advance_storage(wsz);
-
-            /*
-             * Record.
-             */
-            if (record)
-                if (fwrite(buffer, wsz, 1, record) != 1)
-                    fprintf(stderr, "Recording error"), stop_recording();
-        }
-    }
-
-exit:
-    drop_all_storage();
+    do_timeshift(0, 1);
 
     return 0;
 }
