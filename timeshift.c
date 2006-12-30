@@ -335,7 +335,7 @@ int main(int argc, char *argv[])
 
         if (FD_ISSET(0, &rd)) {
             char buffer[4096];
-            int sz = read(0, &buffer, 4096);
+            int sz = read(0, buffer, 4096);
             if (sz == -1)
                 perror("read"), abort();
             else if (sz == 0)
