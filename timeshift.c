@@ -19,17 +19,17 @@
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
 #include <errno.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <netdb.h>
+#include <time.h>
+#include <ws2tcpip.h>
+
+int mkstemp(char *path);
+int winsock_init();
 
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
@@ -89,7 +89,7 @@ void alloc_storage(struct thread_t *th)
     s->fdw = mkstemp(s->name);
     if (s->fdw == -1)
         perror("mkstemp"), abort();
-    s->fdr = open(s->name, O_RDONLY);
+    s->fdr = open(s->name, O_RDONLY|O_BINARY);
     if (s->fdr == -1)
         perror("open"), abort();
     s->offr = s->offw = 0;
@@ -279,16 +279,14 @@ void do_timeshift(int fdin, int fdout)
         FD_ZERO(&wr);
         if (data) FD_SET(fdout, &wr);
 
-        int ret = TEMP_FAILURE_RETRY(select(MAX(fdin, fdout) + 1, &rd, &wr, 0, 0));
+        int ret = select(MAX(fdin, fdout) + 1, &rd, &wr, 0, 0);
         if (ret == -1)
             perror("select"), abort();
 
         if (FD_ISSET(fdin, &rd)) {
             char buffer[4096];
-            int sz = read(fdin, buffer, 4096);
-            if (sz == -1)
-                perror("read"), abort();
-            else if (sz == 0)
+            int sz = recv(fdin, buffer, 4096, 0);
+            if (sz == -1 || sz == 0)
                 in = 0;
             else
                 write_storage(th, buffer, sz);
@@ -297,12 +295,9 @@ void do_timeshift(int fdin, int fdout)
         if (FD_ISSET(fdout, &wr)) {
             char buffer[4096];
             int sz = read_storage(th, buffer, 4096);
-            int wsz = write(fdout, buffer, sz);
-            if (wsz == -1) {
-                if (errno == EPIPE || errno == ECONNRESET)
-                    goto exit;
-                perror("write"), abort();
-            }
+            int wsz = send(fdout, buffer, sz, 0);
+            if (wsz == -1)
+                goto exit;
             advance_storage(th, wsz);
 
 #if 0
@@ -329,7 +324,7 @@ int sendall(int s, const char* buf, const int size)
     int sz = size;
     const char *p = buf;
     while (sz) {
-	int ret = TEMP_FAILURE_RETRY(write(s, p, sz));
+	int ret = send(s, p, sz, 0);
 	if (ret == -1)
 	    return ret;
 
@@ -350,7 +345,7 @@ void thread(int cl)
     if (s == -1)
         perror("socket"), abort();
 
-    if (connect(s, &dst, sizeof(dst)) == -1)
+    if (connect(s, (struct sockaddr *) &dst, sizeof(dst)) == -1)
         goto exit;
 
     while (1) {
@@ -359,16 +354,14 @@ void thread(int cl)
         FD_SET(cl, &rd);
         FD_SET(s, &rd);
 
-        int ret = TEMP_FAILURE_RETRY(select(MAX(cl, s) + 1, &rd, 0, 0, 0));
+        int ret = select(MAX(cl, s) + 1, &rd, 0, 0, 0);
         if (ret == -1)
             perror("select"), abort();
 
         if (FD_ISSET(cl, &rd)) {
             char buffer[4096];
-            int sz = read(cl, buffer, 4096);
-            if (sz == -1)
-                perror("read"), abort();
-            else if (sz == 0)
+            int sz = recv(cl, buffer, 4096, 0);
+            if (sz == -1 || sz == 0)
                 goto exit;
             else if (sendall(s, buffer, sz) == -1)
                 perror("sendall"), abort();
@@ -400,7 +393,7 @@ int init_server_socket(void)
     sa.sin_addr.s_addr = INADDR_ANY;
     sa.sin_port = htons(port);
 
-    if (bind(s, &sa, sizeof(sa)) == -1)
+    if (bind(s, (struct sockaddr *) &sa, sizeof(sa)) == -1)
         perror("bind"), abort();
 
     if (listen(s, 5) == -1)
@@ -428,7 +421,9 @@ unsigned long resolv(const char *host)
 
 int main(int argc, char *argv[])
 {
-    signal(SIGPIPE, SIG_IGN);
+    winsock_init();
+    srand(time(0) ^ getpid());
+
     memset(&dst, 0, sizeof(dst));
     dst.sin_family = AF_INET;
 
@@ -518,7 +513,7 @@ int main(int argc, char *argv[])
         FD_ZERO(&fds);
         FD_SET(s, &fds);
 
-        int ret = TEMP_FAILURE_RETRY(select(s + 1, &fds, 0, 0, 0));
+        int ret = select(s + 1, &fds, 0, 0, 0);
         if (ret == -1)
             perror("select"), abort();
 
@@ -529,6 +524,54 @@ int main(int argc, char *argv[])
 
             thread(cl);
         }
+    }
+
+    return 0;
+}
+
+int mkstemp(char *path)
+{
+    static const char chars[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    static const int nchars = 62;
+
+    int i = 0, fd = -1;
+
+    int len = strlen(path);
+    if (len < 7) {
+        errno = EINVAL;
+        return -1;
+    }
+    int index = len - 6;
+
+retry:
+    if (i++ > 100) { /* give up */
+        errno = ENOENT;
+        return -1;
+    }
+
+    for (char *p = path + index; *p; p++)
+        *p = chars[rand() % nchars];
+
+    fd = open(path, O_CREAT|O_RDWR|O_EXCL|O_BINARY);
+    if (fd == -1)
+        goto retry;
+
+    return fd;
+}
+
+int winsock_init()
+{
+    WORD wVersionRequested;
+    WSADATA wsaData;
+    int err;
+
+    wVersionRequested = MAKEWORD( 2, 0 );
+
+    err = WSAStartup( wVersionRequested, &wsaData );
+    if ( err != 0 ) {
+	fputs("Too old winsock\n", stderr);
+	exit(-1);
     }
 
     return 0;
