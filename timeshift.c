@@ -374,8 +374,8 @@ void thread(int cl)
     do_timeshift(s, cl);
 
 exit:
-    close(cl);
-    close(s);
+    closesocket(cl);
+    closesocket(s);
 }
 
 /**
