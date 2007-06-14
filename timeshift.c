@@ -35,14 +35,14 @@
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
 
 char *cachedir = 0, *recorddir = 0;
-int chunksize = 4 * 1024 * 1024;
+int chunksize = 16 * 1024 * 1024;
 
 /**
  * Structure for storage.
  */
 struct storage_t {
     struct storage_t *next;
-    
+
     char name[32];
     int fdr, fdw;
     int offr, offw;
@@ -188,7 +188,8 @@ int read_storage(char *buf, int bufsz)
     if (sz == -1)
         perror("read"), abort();
     if (sz == 0)
-        fprintf(stderr, "End of file in read_storage, shouldn't happen.\n"), abort();
+        fprintf(stderr, "End of file in read_storage, shouldn't happen.\n"),
+	    abort();
 
     if (lseek(s->fdr, -sz, SEEK_CUR) == -1)
         perror("lseek"), abort();
@@ -301,7 +302,7 @@ int main(int argc, char *argv[])
                 fprintf(stderr, " -r dir - recording dir\n");
                 fprintf(stderr, " -s sz - chunk size\n");
                 return 0;
-                
+
             case ':':
             case '?':
                 fprintf(stderr, "Use %s -h for help\n", argv[0]);
