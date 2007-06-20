@@ -137,8 +137,13 @@ int do_storage_write(const char *buf, int bufsz)
     while (s->offw < chunksize && (p - buf) < bufsz) {
         int towr = MIN(chunksize - s->offw, bufsz - (p - buf));
         sz = write(s->fdw, p, towr);
-        if (sz == -1)
-            perror("write"), abort();
+        if (sz == -1) {
+	    /* Silently fail if the disk is full. */
+	    if (errno == ENOSPC)
+		return bufsz;
+	    else
+		perror("write"), abort();
+	}
         p += sz;
         s->offw += sz;
     }
