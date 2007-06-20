@@ -1,0 +1,2 @@
+#!/bin/bash
+ls --time-style=+%s -l | sort -n -k 6 | awk '{ print $7 }'
