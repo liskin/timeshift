@@ -35,7 +35,7 @@ int winsock_init();
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
 
 char *cachedir = 0, *recorddir = 0;
-int chunksize = 4 * 1024 * 1024;
+int chunksize = 16 * 1024 * 1024;
 unsigned short port = 8080;
 struct sockaddr_in dst;
 
@@ -44,7 +44,7 @@ struct sockaddr_in dst;
  */
 struct storage_t {
     struct storage_t *next;
-    
+
     char name[32];
     int fdr, fdw;
     int offr, offw;
@@ -157,8 +157,13 @@ int do_storage_write(struct thread_t *th, const char *buf, int bufsz)
     while (s->offw < chunksize && (p - buf) < bufsz) {
         int towr = MIN(chunksize - s->offw, bufsz - (p - buf));
         sz = write(s->fdw, p, towr);
-        if (sz == -1)
-            perror("write"), abort();
+        if (sz == -1) {
+	    /* Silently fail if the disk is full. */
+	    if (errno == ENOSPC)
+		return bufsz;
+	    else
+		perror("write"), abort();
+	}
         p += sz;
         s->offw += sz;
     }
@@ -208,7 +213,8 @@ int read_storage(struct thread_t *th, char *buf, int bufsz)
     if (sz == -1)
         perror("read"), abort();
     if (sz == 0)
-        fprintf(stderr, "End of file in read_storage, shouldn't happen.\n"), abort();
+        fprintf(stderr, "End of file in read_storage, shouldn't happen.\n"),
+	    abort();
 
     if (lseek(s->fdr, -sz, SEEK_CUR) == -1)
         perror("lseek"), abort();
@@ -482,7 +488,7 @@ int main(int argc, char *argv[])
                 fprintf(stderr, " -t host - dst host\n");
                 fprintf(stderr, " -p port - dst port\n");
                 return 0;
-                
+
             case ':':
             case '?':
                 fprintf(stderr, "Use %s -h for help\n", argv[0]);
