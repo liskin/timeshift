@@ -14,18 +14,18 @@
  * Example usage:
  */
 
-#define _GNU_SOURCE
 #include <stdio.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 #include <fcntl.h>
-#include <unistd.h>
-#include <signal.h>
+#include <getopt.h>
 #include <errno.h>
 #include <time.h>
+#include <windows.h>
+#include <process.h>
+#include <io.h>
+#include <direct.h>
 #include <ws2tcpip.h>
 
 int mkstemp(char *path);
