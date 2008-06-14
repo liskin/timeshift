@@ -342,9 +342,7 @@ int main(int argc, char *argv[])
         if (FD_ISSET(0, &rd)) {
             char buffer[4096];
             int sz = read(0, buffer, 4096);
-            if (sz == -1)
-                perror("read"), abort();
-            else if (sz == 0)
+            if (sz == -1 || sz == 0)
                 in = 0;
             else
                 write_storage(buffer, sz);
@@ -354,11 +352,8 @@ int main(int argc, char *argv[])
             char buffer[4096];
             int sz = read_storage(buffer, 4096);
             int wsz = write(1, buffer, sz);
-            if (wsz == -1) {
-                if (errno == EPIPE)
-                    goto exit;
-                perror("write"), abort();
-            }
+            if (wsz == -1)
+                goto exit;
             advance_storage(wsz);
 
             /*
