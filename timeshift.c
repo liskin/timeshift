@@ -370,8 +370,8 @@ void thread(int cl)
             int sz = read(cl, buffer, 4096);
             if (sz == -1 || sz == 0)
                 goto exit;
-            else if (sendall(s, buffer, sz) == -1)
-                perror("sendall"), abort();
+            if (sendall(s, buffer, sz) == -1)
+		goto exit;
         }
 
         if (FD_ISSET(s, &rd))
