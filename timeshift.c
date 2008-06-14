@@ -271,6 +271,25 @@ void start_recording(struct thread_t *th)
 #endif
 
 /**
+ * Send the whole buffer, even if that requires blocking.
+ */
+int sendall(int s, const char* buf, const int size)
+{
+    int sz = size;
+    const char *p = buf;
+    while (sz) {
+	int ret = TEMP_FAILURE_RETRY(write(s, p, sz));
+	if (ret == -1)
+	    return ret;
+
+	p += ret;
+	sz -= ret;
+    }
+
+    return size;
+}
+
+/**
  * Do the pipecaching on the in/out fds.
  */
 void do_timeshift(int fdin, int fdout)
@@ -282,7 +301,10 @@ void do_timeshift(int fdin, int fdout)
     while ((data = data_available(th)) || in) {
         fd_set rd, wr;
         FD_ZERO(&rd);
-        if (in) FD_SET(fdin, &rd);
+        if (in) {
+	    FD_SET(fdin, &rd);
+	    FD_SET(fdout, &rd);
+	}
         FD_ZERO(&wr);
         if (data) FD_SET(fdout, &wr);
 
@@ -297,6 +319,15 @@ void do_timeshift(int fdin, int fdout)
                 in = 0;
             else
                 write_storage(th, buffer, sz);
+        }
+
+        if (FD_ISSET(fdout, &rd)) {
+            char buffer[4096];
+            int sz = read(fdout, buffer, 4096);
+            if (sz == -1 || sz == 0)
+                goto exit;
+            if (sendall(fdin, buffer, sz) == -1)
+		goto exit;
         }
 
         if (FD_ISSET(fdout, &wr)) {
@@ -324,25 +355,6 @@ exit:
 }
 
 /**
- * Send the whole buffer, even if that requires blocking.
- */
-int sendall(int s, const char* buf, const int size)
-{
-    int sz = size;
-    const char *p = buf;
-    while (sz) {
-	int ret = TEMP_FAILURE_RETRY(write(s, p, sz));
-	if (ret == -1)
-	    return ret;
-
-	p += ret;
-	sz -= ret;
-    }
-
-    return size;
-}
-
-/**
  * The client thread. Connect to the destination, pass the request and then do
  * the pipecaching.
  */
@@ -354,29 +366,6 @@ void thread(int cl)
 
     if (connect(s, &dst, sizeof(dst)) == -1)
         goto exit;
-
-    while (1) {
-        fd_set rd;
-        FD_ZERO(&rd);
-        FD_SET(cl, &rd);
-        FD_SET(s, &rd);
-
-        int ret = TEMP_FAILURE_RETRY(select(MAX(cl, s) + 1, &rd, 0, 0, 0));
-        if (ret == -1)
-            perror("select"), abort();
-
-        if (FD_ISSET(cl, &rd)) {
-            char buffer[4096];
-            int sz = read(cl, buffer, 4096);
-            if (sz == -1 || sz == 0)
-                goto exit;
-            if (sendall(s, buffer, sz) == -1)
-		goto exit;
-        }
-
-        if (FD_ISSET(s, &rd))
-            break;
-    }
 
     do_timeshift(s, cl);
 
